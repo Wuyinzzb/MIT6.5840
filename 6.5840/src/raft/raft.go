@@ -20,7 +20,8 @@ package raft
 import (
 	//	"bytes"
 
-	"fmt"
+	//"fmt"
+
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -36,27 +37,6 @@ const (
 	STATE_LEADER
 )
 
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-
-// in part 2D you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
-type ApplyMsg struct {
-	CommandValid bool
-	Command      interface{}
-	CommandIndex int
-
-	// For 2D:
-	SnapshotValid bool
-	Snapshot      []byte
-	SnapshotTerm  int
-	SnapshotIndex int
-}
-
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -66,12 +46,17 @@ type Raft struct {
 	dead      int32               // set by Kill()
 
 	state       int
-	currentTerm int
+	currentTerm uint64
 	votedFor    int
 	cntVote     int
 	heartBeat   chan bool
 	winElection chan bool
 	voteAsk     int
+	appendflag  Appendflag
+	log         Log
+	commitIndex uint64
+	applyCh     chan ApplyMsg
+	commitRaft  []bool
 	//time
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -83,7 +68,7 @@ type Raft struct {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
-	var term int
+	var term uint64
 	var isleader bool
 	// Your code here (2A).
 	rf.mu.Lock()
@@ -94,7 +79,7 @@ func (rf *Raft) GetState() (int, bool) {
 		isleader = false
 	}
 	rf.mu.Unlock()
-	return term, isleader
+	return int(term), isleader
 }
 
 // save Raft's persistent state to stable storage,
@@ -144,151 +129,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-type RequestAppendArgs struct {
-	Term     int
-	LeaderId int
-}
-type RequestAppendReply struct {
-	Term    int
-	Success bool
-}
-
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
-	Term         int
-	CandidateId  int
-	LastLogIndex int
-	LastLogTerm  int
-	// Your data here (2A, 2B).
-}
-
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term        int
-	VoteGranted bool
-}
-
-// example RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-	//被选举人调用选举人的RequestVote，rf是指的选举人？
-	rf.mu.Lock()
-	reply.VoteGranted = false
-	reply.Term = rf.currentTerm
-	if rf.currentTerm > args.Term {
-		rf.mu.Unlock()
-		return
-	}
-	if rf.currentTerm < args.Term {
-		rf.currentTerm = args.Term
-		rf.state = STATE_FOLLOW
-		rf.votedFor = -1
-		//rf.heartBeat <- true
-		fmt.Printf("server %d turn to follower in term%d state %d\n", rf.me, rf.currentTerm, rf.state)
-	}
-	if rf.votedFor == -1 {
-		rf.votedFor = args.CandidateId
-		reply.Term = args.Term
-		reply.VoteGranted = true
-		fmt.Printf("term %d :server %d vote for %d\n", args.Term, rf.me, args.CandidateId)
-	}
-	rf.mu.Unlock()
-
-}
-func (rf *Raft) AppendEntries(args *RequestAppendArgs, reply *RequestAppendReply) {
-	rf.mu.Lock()
-	if args.Term < rf.currentTerm {
-		//fmt.Printf("leader%d term%d less than my%d term%d\n", args.LeaderId, args.Term, rf.me, rf.currentTerm)
-		reply.Success = false
-		rf.mu.Unlock()
-		return
-	}
-
-	rf.currentTerm = args.Term
-	reply.Success = true
-	//fmt.Printf("term %d :server %d appendentries for %d\n", args.Term, args.LeaderId, rf.me)
-	rf.mu.Unlock()
-	rf.setHeartBeat()
-
-}
-
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-func (rf *Raft) setHeartBeat() {
-	//fmt.Printf("%d sethearbeat\n", rf.me)
-	rf.mu.Lock()
-	rf.votedFor = -1
-	rf.cntVote = 0
-	rf.heartBeat <- true
-	rf.mu.Unlock()
-}
-
-func (rf *Raft) setWinElection() {
-	rf.votedFor = -1
-	rf.cntVote = 0
-	fmt.Printf("%d *********win election \n", rf.me)
-	rf.winElection <- true
-}
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	if ok {
-		if reply.VoteGranted {
-			rf.mu.Lock()
-			rf.cntVote += 1
-			if rf.cntVote > (len(rf.peers) / 2) {
-				rf.setWinElection()
-			}
-			rf.mu.Unlock()
-		}
-		rf.mu.Lock()
-		rf.voteAsk++
-		if rf.voteAsk == len(rf.peers) {
-			rf.cntVote = 0
-			rf.votedFor = -1
-			rf.voteAsk = 0
-		}
-		rf.mu.Unlock()
-	}
-	return ok
-}
-func (rf *Raft) sendAppendEntries(server int, args *RequestAppendArgs, reply *RequestAppendReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	if ok {
-		if !reply.Success {
-			rf.updateState(STATE_FOLLOW)
-		}
-	}
-	return ok
-}
-
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -301,13 +141,24 @@ func (rf *Raft) sendAppendEntries(server int, args *RequestAppendArgs, reply *Re
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
+// 如果该raft是leader节点，他会把接受到的命令在appendEntries里发送给follower
+
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-	isLeader := true
-
+	isLeader := false
 	// Your code here (2B).
-
+	rf.mu.Lock()
+	if rf.state == STATE_LEADER {
+		isLeader = true
+		term = int(rf.currentTerm)
+		index = int(rf.log.lastIndex()) + 1
+		rf.log.currentEntry = Entry{Term: rf.currentTerm, Data: command}
+		rf.mu.Unlock()
+		rf.broadcastAppendEntries(true)
+	} else {
+		rf.mu.Unlock()
+	}
 	return index, term, isLeader
 }
 
@@ -339,47 +190,7 @@ func timeOut() time.Duration {
 	ms := 300 + (rand.Int63() % 500)
 	return time.Duration(ms) * time.Millisecond
 }
-func (rf *Raft) broadcastAppendEntries() {
-	rf.mu.Lock()
-	args := RequestAppendArgs{
-		Term:     rf.currentTerm,
-		LeaderId: rf.me,
-	}
-	rf.mu.Unlock()
-	for i := range rf.peers {
-		reply := RequestAppendReply{}
-		if i == rf.me {
-			continue
-		}
-		go rf.sendAppendEntries(i, &args, &reply)
-	}
-}
-func (rf *Raft) startElection() {
-	rf.updateState(STATE_CANDIDATE)
-	rf.mu.Lock()
-	rf.currentTerm += 1
-	fmt.Printf("server %d start election in term %d\n", rf.me, rf.currentTerm)
-	if rf.votedFor == -1 {
-		rf.cntVote += 1
-		rf.votedFor = rf.me
-		rf.voteAsk += 1
-		fmt.Printf("term %d :server %d vote for %d\n", rf.currentTerm, rf.me, rf.votedFor)
-	}
 
-	args := RequestVoteArgs{
-		Term:        rf.currentTerm,
-		CandidateId: rf.me,
-	}
-	rf.mu.Unlock()
-	for i := range rf.peers {
-		reply := RequestVoteReply{}
-		if i == rf.me {
-			continue
-		}
-		go rf.sendRequestVote(i, &args, &reply)
-	}
-
-}
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		rf.mu.Lock()
@@ -403,14 +214,14 @@ func (rf *Raft) ticker() {
 				rf.startElection()
 			case <-rf.winElection:
 				rf.updateState(STATE_LEADER)
-				rf.broadcastAppendEntries()
+				rf.broadcastAppendEntries(false)
 			}
 		//leader每隔一段时间就像follow发送心跳包
 		case STATE_LEADER:
 			//fmt.Printf("appendentries%d\n", rf.me)
 			select {
 			case <-time.After(100 * time.Millisecond):
-				rf.broadcastAppendEntries()
+				rf.broadcastAppendEntries(false)
 			case <-rf.heartBeat:
 				rf.updateState(STATE_FOLLOW)
 			}
@@ -442,6 +253,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.heartBeat = make(chan bool)
 	rf.winElection = make(chan bool)
 	rf.voteAsk = 0
+	rf.commitIndex = 0
+	rf.log = makelog()
+	rf.appendflag = makeappend()
+	rf.applyCh = applyCh
+	rf.commitRaft = make([]bool, len(rf.peers))
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
@@ -449,6 +265,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	go rf.committer()
 
 	return rf
 }

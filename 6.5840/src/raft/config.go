@@ -8,20 +8,24 @@ package raft
 // test with the original before submitting.
 //
 
-import "MIT6.5840/labgob"
-import "MIT6.5840/labrpc"
-import "bytes"
-import "log"
-import "sync"
-import "sync/atomic"
-import "testing"
-import "runtime"
-import "math/rand"
-import crand "crypto/rand"
-import "math/big"
-import "encoding/base64"
-import "time"
-import "fmt"
+import (
+	"bytes"
+	"log"
+	"math/rand"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"MIT6.5840/labgob"
+	"MIT6.5840/labrpc"
+
+	crand "crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"math/big"
+	"time"
+)
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -142,6 +146,7 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	v := m.Command
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
+			fmt.Printf("oldok is %v, old is %v, v is %v\n", oldok, old, v)
 			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
 			// some server has already committed a different value for this entry!
 			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
@@ -161,9 +166,11 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 func (cfg *config) applier(i int, applyCh chan ApplyMsg) {
 	for m := range applyCh {
 		if m.CommandValid == false {
+			//fmt.Println("m.commandvaild false")
 			// ignore other types of ApplyMsg
 		} else {
 			cfg.mu.Lock()
+			//fmt.Printf("m.commandindex %d\n", m.CommandIndex)
 			err_msg, prevok := cfg.checkLogs(i, m)
 			cfg.mu.Unlock()
 			if m.CommandIndex > 1 && prevok == false {
@@ -495,6 +502,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
+		//fmt.Printf("cfg.logs[%d][%d]   %v\n", i, index, cmd1)
 		cfg.mu.Unlock()
 
 		if ok {
@@ -581,7 +589,9 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
+				//fmt.Printf("nd is %d index is %d\n", nd, index)
 				if nd > 0 && nd >= expectedServers {
+					//fmt.Println("nd == expectedServers")
 					// committed
 					if cmd1 == cmd {
 						// and it was the command we submitted.
