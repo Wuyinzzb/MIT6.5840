@@ -1,5 +1,7 @@
 package raft
 
+import "fmt"
+
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
@@ -32,6 +34,7 @@ func (rf *Raft) committer() {
 		//<-rf.appendflag.clientReply
 		//fmt.Printf("message reply client by applmsg%d\n", rf.me)
 		rf.applyCh <- ApplyMsg{CommandValid: true, Command: rf.log.entries[rf.log.lastIndex()].Data, CommandIndex: int(rf.log.lastIndex())}
+		fmt.Printf("****raft%d commit\n", rf.me)
 	}
 }
 func (rf *Raft) broadcommit() {
@@ -49,7 +52,9 @@ func (rf *Raft) broadcommit() {
 }
 func (rf *Raft) CommitAsk(args *CommitArgs, reply *CommitReply) {
 	rf.appendflag.commitLog <- true
-	//fmt.Printf("****raft%d commit\n", rf.me)
+	rf.mu.Lock()
+	rf.commitIndex++
+	rf.mu.Unlock()
 }
 func (rf *Raft) sendCommit(server int, args *CommitArgs, reply *CommitReply) bool {
 	ok := rf.peers[server].Call("Raft.CommitAsk", args, reply)

@@ -502,7 +502,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 
 		cfg.mu.Lock()
 		cmd1, ok := cfg.logs[i][index]
-		//fmt.Printf("cfg.logs[%d][%d]   %v\n", i, index, cmd1)
+		fmt.Printf("cfg.logs[%d][%d]   %v\n", i, index, cmd1)
 		cfg.mu.Unlock()
 
 		if ok {
@@ -577,6 +577,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			if rf != nil {
 				index1, _, ok := rf.Start(cmd)
 				if ok {
+					//fmt.Printf("leader is %d command is %v index %d******************\n", starts, cmd, index1)
 					index = index1
 					break
 				}
@@ -589,7 +590,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
-				//fmt.Printf("nd is %d index is %d\n", nd, index)
+				fmt.Printf("nd is %d index is %d\n", nd, index)
 				if nd > 0 && nd >= expectedServers {
 					//fmt.Println("nd == expectedServers")
 					// committed

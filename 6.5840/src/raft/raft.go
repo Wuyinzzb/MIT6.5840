@@ -22,6 +22,7 @@ import (
 
 	//"fmt"
 
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -45,18 +46,17 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	state       int
-	currentTerm uint64
-	votedFor    int
-	cntVote     int
-	heartBeat   chan bool
-	winElection chan bool
-	voteAsk     int
-	appendflag  Appendflag
-	log         Log
-	commitIndex uint64
-	applyCh     chan ApplyMsg
-	commitRaft  []bool
+	state        int
+	currentTerm  uint64
+	heartBeat    chan bool
+	winElection  chan bool
+	appendflag   Appendflag
+	voteflag     VoteFlag
+	log          Log
+	commitIndex  uint64
+	applyCh      chan ApplyMsg
+	commitRaft   []bool
+	peerTrackers []PeerTracker
 	//time
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -149,11 +149,23 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := false
 	// Your code here (2B).
 	rf.mu.Lock()
+	// if rf.state == STATE_LEADER {
+	// 	fmt.Printf("command is %v\n", command)
+	// }
+	//不能简单的拒绝重复的命令，因为当config发送重复命令时还需要raft的返回，拒之门外就没有返回了
+	//if rf.state == STATE_LEADER && command != rf.log.entries[rf.log.lastIndex()].Data
 	if rf.state == STATE_LEADER {
 		isLeader = true
 		term = int(rf.currentTerm)
 		index = int(rf.log.lastIndex()) + 1
-		rf.log.currentEntry = Entry{Term: rf.currentTerm, Data: command}
+		//如果是重复命令，直接返回
+		if command == rf.log.entries[rf.log.lastIndex()].Data {
+			rf.mu.Unlock()
+			return index - 1, term, isLeader
+		}
+		currentEntry := Entry{Term: rf.currentTerm, Data: command}
+		rf.log.entries = append(rf.log.entries, currentEntry)
+		fmt.Printf("raft %d add a command %v in index%d\n", rf.me, command, rf.log.lastIndex())
 		rf.mu.Unlock()
 		rf.broadcastAppendEntries(true)
 	} else {
@@ -180,14 +192,19 @@ func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
 }
+func (rf *Raft) leadertofollow() {
+	rf.mu.Lock()
+	rf.state = STATE_FOLLOW
+	rf.heartBeat <- true
+	rf.mu.Unlock()
+}
 func (rf *Raft) updateState(state int) {
 	rf.mu.Lock()
 	rf.state = state
 	rf.mu.Unlock()
-
 }
 func timeOut() time.Duration {
-	ms := 300 + (rand.Int63() % 500)
+	ms := 500 + (rand.Int63() % 500)
 	return time.Duration(ms) * time.Millisecond
 }
 
@@ -214,6 +231,7 @@ func (rf *Raft) ticker() {
 				rf.startElection()
 			case <-rf.winElection:
 				rf.updateState(STATE_LEADER)
+				//fmt.Println("candidate broadcast appendentries")
 				rf.broadcastAppendEntries(false)
 			}
 		//leader每隔一段时间就像follow发送心跳包
@@ -221,6 +239,7 @@ func (rf *Raft) ticker() {
 			//fmt.Printf("appendentries%d\n", rf.me)
 			select {
 			case <-time.After(100 * time.Millisecond):
+				//fmt.Println("leader broadcast appendentries")
 				rf.broadcastAppendEntries(false)
 			case <-rf.heartBeat:
 				rf.updateState(STATE_FOLLOW)
@@ -248,16 +267,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.state = STATE_FOLLOW
 	rf.currentTerm = 0
-	rf.votedFor = -1
-	rf.cntVote = 0
+
 	rf.heartBeat = make(chan bool)
 	rf.winElection = make(chan bool)
-	rf.voteAsk = 0
-	rf.commitIndex = 0
+
+	rf.commitIndex = 1
 	rf.log = makelog()
 	rf.appendflag = makeappend()
+	rf.voteflag = makevote()
 	rf.applyCh = applyCh
 	rf.commitRaft = make([]bool, len(rf.peers))
+	rf.peerTrackers = make([]PeerTracker, len(rf.peers))
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash
