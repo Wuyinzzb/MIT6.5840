@@ -48,6 +48,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	term := int(rf.log.entries[rf.log.lastIndex()].Term)
 	index := int(rf.log.lastIndex())
+	//要求候选人最后日志的term大于自己或者term相等但日志长度大于等于自己，才可能会给该候选者投票
 	if args.LastLogTerm > term || (args.LastLogTerm == term && args.LastLogIndex >= index) {
 		if rf.currentTerm < args.Term {
 			rf.currentTerm = args.Term

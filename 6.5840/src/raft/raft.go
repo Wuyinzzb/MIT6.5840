@@ -46,17 +46,18 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	state        int
-	currentTerm  uint64
-	heartBeat    chan bool
-	winElection  chan bool
-	appendflag   Appendflag
-	voteflag     VoteFlag
-	log          Log
-	commitIndex  uint64
-	applyCh      chan ApplyMsg
-	commitRaft   []bool
-	peerTrackers []PeerTracker
+	state          int
+	currentTerm    uint64
+	heartBeat      chan bool
+	winElection    chan bool
+	appendflag     Appendflag
+	voteflag       VoteFlag
+	log            Log
+	commitIndex    uint64
+	applyCh        chan ApplyMsg
+	commitRaft     []bool
+	peerTrackers   []PeerTracker
+	commandsrecord []CommandRecord
 	//time
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -167,6 +168,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.log.entries = append(rf.log.entries, currentEntry)
 		fmt.Printf("raft %d add a command %v in index%d\n", rf.me, command, rf.log.lastIndex())
 		rf.mu.Unlock()
+		//假如两条命令紧接着进入broadcast，上一条信息还没处理完就会接受到下一条
 		rf.broadcastAppendEntries(true)
 	} else {
 		rf.mu.Unlock()
@@ -278,6 +280,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.commitRaft = make([]bool, len(rf.peers))
 	rf.peerTrackers = make([]PeerTracker, len(rf.peers))
+	rf.commandsrecord = []CommandRecord{}
 	// Your initialization code here (2A, 2B, 2C).
 
 	// initialize from state persisted before a crash

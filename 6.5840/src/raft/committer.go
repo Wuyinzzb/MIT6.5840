@@ -58,5 +58,8 @@ func (rf *Raft) CommitAsk(args *CommitArgs, reply *CommitReply) {
 }
 func (rf *Raft) sendCommit(server int, args *CommitArgs, reply *CommitReply) bool {
 	ok := rf.peers[server].Call("Raft.CommitAsk", args, reply)
+	if ok {
+		rf.deleteHead()
+	}
 	return ok
 }
