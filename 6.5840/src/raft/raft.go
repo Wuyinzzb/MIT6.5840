@@ -46,16 +46,16 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	state          int
-	currentTerm    uint64
-	heartBeat      chan bool
-	winElection    chan bool
-	appendflag     Appendflag
-	voteflag       VoteFlag
-	log            Log
-	commitIndex    uint64
-	applyCh        chan ApplyMsg
-	commitRaft     []bool
+	state       int
+	currentTerm uint64
+	heartBeat   chan bool
+	winElection chan bool
+	appendflag  Appendflag
+	voteflag    VoteFlag
+	log         Log
+	commitIndex uint64
+	applyCh     chan ApplyMsg
+
 	peerTrackers   []PeerTracker
 	commandsrecord []CommandRecord
 	//time
@@ -167,9 +167,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		currentEntry := Entry{Term: rf.currentTerm, Data: command}
 		rf.log.entries = append(rf.log.entries, currentEntry)
 		fmt.Printf("raft %d add a command %v in index%d\n", rf.me, command, rf.log.lastIndex())
+
+		commitRaft := make([]bool, len(rf.peers))
+		commitRaft[rf.me] = true
+		record := CommandRecord{index: rf.log.lastIndex(), count: 1, commitRafts: commitRaft}
+		rf.commandsrecord = append(rf.commandsrecord, record)
+
 		rf.mu.Unlock()
 		//假如两条命令紧接着进入broadcast，上一条信息还没处理完就会接受到下一条
-		rf.broadcastAppendEntries(true)
+		rf.broadcastAppendEntries()
 	} else {
 		rf.mu.Unlock()
 	}
@@ -234,7 +240,7 @@ func (rf *Raft) ticker() {
 			case <-rf.winElection:
 				rf.updateState(STATE_LEADER)
 				//fmt.Println("candidate broadcast appendentries")
-				rf.broadcastAppendEntries(false)
+				rf.broadcastAppendEntries()
 			}
 		//leader每隔一段时间就像follow发送心跳包
 		case STATE_LEADER:
@@ -242,7 +248,7 @@ func (rf *Raft) ticker() {
 			select {
 			case <-time.After(100 * time.Millisecond):
 				//fmt.Println("leader broadcast appendentries")
-				rf.broadcastAppendEntries(false)
+				rf.broadcastAppendEntries()
 			case <-rf.heartBeat:
 				rf.updateState(STATE_FOLLOW)
 			}
@@ -278,7 +284,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.appendflag = makeappend()
 	rf.voteflag = makevote()
 	rf.applyCh = applyCh
-	rf.commitRaft = make([]bool, len(rf.peers))
 	rf.peerTrackers = make([]PeerTracker, len(rf.peers))
 	rf.commandsrecord = []CommandRecord{}
 	// Your initialization code here (2A, 2B, 2C).

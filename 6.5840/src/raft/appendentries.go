@@ -12,7 +12,7 @@ type RequestAppendArgs struct {
 }
 type Appendflag struct {
 	clientReply chan bool
-	commitLog   chan bool
+	commitLog   chan uint64
 	flag        bool
 	isclinet    bool
 }
@@ -26,7 +26,7 @@ type RequestAppendReply struct {
 func makeappend() Appendflag {
 	flag := Appendflag{
 		clientReply: make(chan bool),
-		commitLog:   make(chan bool),
+		commitLog:   make(chan uint64),
 		flag:        false,
 		isclinet:    false,
 	}
@@ -34,6 +34,7 @@ func makeappend() Appendflag {
 }
 func (rf *Raft) AppendEntries(args *RequestAppendArgs, reply *RequestAppendReply) {
 	rf.mu.Lock()
+	reply.FollowCommit = rf.commitIndex
 	//fmt.Printf("raft %d accept a append\n", rf.me)
 	//1，如果leader任期该节点，拒绝，return false
 	if args.Term < rf.currentTerm {
@@ -59,9 +60,11 @@ func (rf *Raft) AppendEntries(args *RequestAppendArgs, reply *RequestAppendReply
 	}
 	//fmt.Printf("raft %d add a command %v in index%d\n", rf.me, args.Entry.Data, args.PreLogIndex)
 	//3.如果一个已有的词条和新词条冲突，删除已有词条和其后的所有词条
-	//如果nextindex的位置上有数据，直接删除该位置之后的所有词条
 	if rf.log.lastIndex() > args.PreLogIndex {
-		rf.log.entries = rf.log.entries[:args.PreLogIndex+1]
+		next := args.PreLogIndex + 1
+		if rf.log.entries[next].Data != args.Entry.Data || rf.log.entries[next].Term != args.Entry.Term {
+			rf.log.entries = rf.log.entries[:args.PreLogIndex+1]
+		}
 	}
 	// if rf.log.entries[args.PreLogIndex+1].Term != 0 && rf.log.entries[args.PreLogIndex+1] != args.Entry{
 	//
@@ -89,7 +92,7 @@ func (rf *Raft) AppendEntries(args *RequestAppendArgs, reply *RequestAppendReply
 			rf.commitIndex = args.LeaderCommit
 		}
 	}
-
+	reply.FollowCommit = rf.commitIndex
 	//fmt.Printf("term %d :server %d appendentries for %d\n", args.Term, args.LeaderId, rf.me)
 	rf.mu.Unlock()
 	rf.setHeartBeat()
@@ -135,64 +138,41 @@ func (rf *Raft) setHeartBeat() {
 func (rf *Raft) sendAppendEntries(server int, args *RequestAppendArgs, reply *RequestAppendReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	if ok {
-		alreadycommit := false
 		if !reply.Success {
 			if reply.Term > rf.currentTerm {
 				go rf.leadertofollow()
 				//fmt.Println("*****************")
 			} else {
 				rf.mu.Lock()
-				rf.peerTrackers[server].nextLogIndex -= 1
+				rf.peerTrackers[server].nextLogIndex = reply.FollowCommit
 				rf.mu.Unlock()
 				//fmt.Println("position index term is not equal!!")
 			}
 		}
 		//如果是客户端连接请求
-		rf.mu.Lock()
-		if rf.appendflag.isclinet {
-			if reply.Success {
-				//rf.appendflag.cntLog += 1
-				//命令记录+1，表示有一个新的节点复制了对应的日志
-				rf.setCount(rf.peerTrackers[server].nextLogIndex)
-				fmt.Printf("index %d count %d\n", rf.peerTrackers[server].nextLogIndex, rf.getCount(rf.peerTrackers[server].nextLogIndex))
-				rf.commitRaft[server] = true
-				//fmt.Printf("raft %d is true\n", server)
-				if rf.appendflag.flag {
-					args := CommitArgs{}
-					reply := CommitReply{}
-					rf.mu.Unlock()
-					go rf.sendCommit(server, &args, &reply)
-					alreadycommit = true
-					rf.mu.Lock()
-					//fmt.Printf("raft%d is alone to send commit\n", server)
-				}
-			}
-			//rf.appendflag.logAsk += 1
-			//如果半数服务器同意了请求
-			if rf.getCount(rf.peerTrackers[server].nextLogIndex) > uint64(len(rf.peers)/2) && !rf.appendflag.flag {
-				//fmt.Println("success reply client")
-				//fmt.Printf("len(rf.peers) is %d\n", len(rf.peers))
-				rf.appendflag.flag = true //每一次最多只进来一次if
-				rf.mu.Unlock()
-				go rf.broadcommit()
-				rf.mu.Lock()
-			}
-
-		}
-		rf.mu.Unlock()
 		if reply.Appendentry {
-			rf.mu.Lock()
-			if rf.commitIndex > rf.peerTrackers[server].nextLogIndex && !alreadycommit {
-				args := CommitArgs{}
-				reply := CommitReply{}
-				rf.mu.Unlock()
-				go rf.sendCommit(server, &args, &reply)
+			if rf.setCount(server, reply.FollowCommit) {
 				rf.mu.Lock()
-				fmt.Printf("commit is %d\n", rf.commitIndex)
+				record := rf.commandsrecord[0]
+				if record.count > uint64(len(rf.peers)/2) {
+					//fmt.Println("success reply client")
+					//fmt.Printf("len(rf.peers) is %d\n", len(rf.peers))
+					//
+					rf.mu.Unlock()
+					rf.deleteHead()
+					go rf.broadcommit(record)
+					rf.mu.Lock()
+				}
+				rf.mu.Unlock()
+			} else {
+				rf.mu.Lock()
+				args := CommitArgs{
+					Index: reply.FollowCommit,
+				}
+				rf.mu.Unlock()
+				reply := CommitReply{}
+				go rf.sendCommit(server, &args, &reply)
 			}
-			rf.peerTrackers[server].nextLogIndex += 1
-			//fmt.Printf("raft %d nextlogindex %d\n", server, rf.peerTrackers[server].nextLogIndex)
-			rf.mu.Unlock()
 		}
 	}
 
@@ -200,24 +180,7 @@ func (rf *Raft) sendAppendEntries(server int, args *RequestAppendArgs, reply *Re
 }
 
 // 如果是客户端有信息进来，此时leader
-func (rf *Raft) broadcastAppendEntries(flag bool) {
-	rf.mu.Lock()
-	//fmt.Printf("raft%d is leader, \n", rf.me)
-	rf.appendflag.isclinet = flag
-	if flag {
-		rf.appendflag.flag = false
-		//fmt.Printf("clear***************\n")
-		//args.Entry = rf.log.currentEntry
-		//rf.log.entries = append(rf.log.entries, rf.log.currentEntry)
-		//为每一个命令创建一个记录commit数值的记录，当这个记录能提交时再删除
-		//不存在前一个命令不能提交下一个命令能提交的状况
-		record := CommandRecord{index: rf.log.lastIndex(), count: 1}
-		fmt.Printf("command is %v, index is %d\n", rf.log.entries[rf.log.lastIndex()].Data, rf.log.lastIndex())
-		rf.commandsrecord = append(rf.commandsrecord, record)
-		rf.commitRaft[rf.me] = true
-		//rf.appendflag.clientReply <- true
-	}
-	rf.mu.Unlock()
+func (rf *Raft) broadcastAppendEntries() {
 	for i := range rf.peers {
 		reply := RequestAppendReply{}
 		if i == rf.me {
@@ -228,9 +191,11 @@ func (rf *Raft) broadcastAppendEntries(flag bool) {
 		args := rf.makeAppendEntriesArgs(i)
 		//起始每次发送之后就默认成功了nextindex++，就算失败了后续心跳也会慢慢更正(X)
 		go rf.sendAppendEntries(i, &args, &reply)
-		// rf.mu.Lock()
-		// if rf.log.lastIndex() <
-		// rf.mu.Unlock()
+		rf.mu.Lock()
+		if rf.log.lastIndex() >= rf.peerTrackers[i].nextLogIndex {
+			rf.peerTrackers[i].nextLogIndex++
+		}
+		rf.mu.Unlock()
 	}
 }
 

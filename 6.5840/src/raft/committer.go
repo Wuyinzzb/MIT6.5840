@@ -1,6 +1,9 @@
 package raft
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -24,42 +27,47 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 type CommitArgs struct {
+	Index uint64
 }
 type CommitReply struct {
 }
 
 func (rf *Raft) committer() {
 	for !rf.killed() {
-		<-rf.appendflag.commitLog
-		//<-rf.appendflag.clientReply
-		//fmt.Printf("message reply client by applmsg%d\n", rf.me)
-		rf.applyCh <- ApplyMsg{CommandValid: true, Command: rf.log.entries[rf.log.lastIndex()].Data, CommandIndex: int(rf.log.lastIndex())}
-		fmt.Printf("****raft%d commit\n", rf.me)
+		select {
+		case index := <-rf.appendflag.commitLog:
+			//<-rf.appendflag.clientReply
+			//fmt.Printf("message reply client by applmsg%d\n", rf.me)
+			rf.applyCh <- ApplyMsg{CommandValid: true, Command: rf.log.entries[index].Data, CommandIndex: int(index)}
+			fmt.Printf("****raft%d commit index %d command %v\n", rf.me, index, rf.log.entries[index].Data)
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
+
 }
-func (rf *Raft) broadcommit() {
+
+func (rf *Raft) broadcommit(record CommandRecord) {
 	for i := range rf.peers {
-		args := CommitArgs{}
+		rf.mu.Lock()
+		args := CommitArgs{
+			Index: record.index,
+		}
 		reply := CommitReply{}
-		if rf.commitRaft[i] {
+		rf.mu.Unlock()
+		if record.commitRafts[i] {
 			//fmt.Printf("raft %d is braod sent to commit\n", i)
 			go rf.sendCommit(i, &args, &reply)
 		}
-		rf.mu.Lock()
-		rf.commitRaft[i] = false
-		rf.mu.Unlock()
 	}
+	// 如果一个命令先后进入broad，在删除了节点之后，第二次的访问将会访问到下一个命令导致错误
 }
 func (rf *Raft) CommitAsk(args *CommitArgs, reply *CommitReply) {
-	rf.appendflag.commitLog <- true
+	rf.appendflag.commitLog <- args.Index
 	rf.mu.Lock()
 	rf.commitIndex++
 	rf.mu.Unlock()
 }
 func (rf *Raft) sendCommit(server int, args *CommitArgs, reply *CommitReply) bool {
 	ok := rf.peers[server].Call("Raft.CommitAsk", args, reply)
-	if ok {
-		rf.deleteHead()
-	}
 	return ok
 }
